@@ -430,6 +430,20 @@ private final class MP4WriterSession: @unchecked Sendable {
     private var micAudioInput: AVAssetWriterInput?   // microphone audio
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
 
+    // MARK: - Mic resampling
+
+    // AVCaptureAudioDataOutput delivers raw PCM at the input device's native
+    // rate (Bluetooth HFP/HSP = 8/16/24/32 kHz, possibly stereo), but
+    // `micAudioInput` is hardcoded to 48 kHz mono AAC. Without resampling, the
+    // AAC encoder misinterprets the sample timing and the output audio is
+    // slowed down / pitch-lowered ("demonic"). The converter below remaps
+    // every mic buffer to 48 kHz mono LPCM before it reaches the writer input.
+    // Queue-confined like everything else in this class.
+    private var micConverter: AVAudioConverter?
+    private var micConverterInputFormat: AVAudioFormat?
+    private let micOutputFormat: AVAudioFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false)!
+
     private var sessionStarted = false
     private var startTime: CMTime = .invalid
     private(set) var frameCount: Int64 = 0
@@ -597,6 +611,8 @@ private final class MP4WriterSession: @unchecked Sendable {
         audioInput = nil
         micAudioInput = nil
         adaptor = nil
+        micConverter = nil
+        micConverterInputFormat = nil
     }
 
     // MARK: Sample handling (called on the queue by SCStream / mic delegate)
@@ -620,7 +636,157 @@ private final class MP4WriterSession: @unchecked Sendable {
         guard mode == .recording, let input = micAudioInput else { return }
         if !sessionStarted { pendingMicSamples.append(sampleBuffer); return }
         guard input.isReadyForMoreMediaData else { return }
-        if let adjusted = sampleBuffer.adjustingTime(by: pauseOffset) { input.append(adjusted) }
+        appendConvertedMicSample(sampleBuffer, to: input)
+    }
+
+    /// Convert a mic `CMSampleBuffer` from the device's native PCM format to the
+    /// 48 kHz mono LPCM that `micAudioInput` expects, then append it. Bluetooth
+    /// headsets deliver audio at 8/16/24/32 kHz (HFP/HSP) and possibly stereo;
+    /// without this resampling stage the AAC encoder misinterprets the sample
+    /// timing and the output audio is slowed down / pitch-lowered. On any
+    /// failure (non-PCM input, converter creation error, empty output) the
+    /// sample is silently dropped so the recording continues without corrupting
+    /// the audio track rather than aborting the whole write.
+    private func appendConvertedMicSample(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput) {
+        // a. Apply the pause adjustment first.
+        guard let adjusted = sampleBuffer.adjustingTime(by: pauseOffset) else { return }
+
+        // b. Read the input ASBD from the sample buffer's format description.
+        guard let formatDesc = CMSampleBufferGetFormatDescription(adjusted),
+              let asbdPointer = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) else { return }
+        let asbd = asbdPointer.pointee
+
+        // c. Only resample Linear PCM input — never append unconverted data.
+        guard asbd.mFormatID == kAudioFormatLinearPCM else { return }
+
+        // h. Fast path: input already matches the target 48 kHz mono LPCM, so
+        //    no resampling is needed — append the pause-adjusted buffer directly.
+        if asbd.mSampleRate == 48000 && asbd.mChannelsPerFrame == 1 {
+            input.append(adjusted)
+            return
+        }
+
+        // d. Build an AVAudioFormat from the ASBD; lazily create the converter,
+        //    or rebuild it if the input format changed (e.g. a Bluetooth profile
+        //    switch mid-recording changes the sample rate / channel count).
+        guard let inputFormat = AVAudioFormat(streamDescription: asbdPointer) else { return }
+        if micConverter == nil || micConverterInputFormat != inputFormat {
+            guard let converter = AVAudioConverter(from: inputFormat, to: micOutputFormat) else { return }
+            micConverter = converter
+            micConverterInputFormat = inputFormat
+        }
+        guard let converter = micConverter else { return }
+
+        let inputFrameCount = AVAudioFrameCount(CMSampleBufferGetNumSamples(adjusted))
+        guard inputFrameCount > 0 else { return }
+
+        // e. Copy the PCM data out of the CMSampleBuffer into an AVAudioPCMBuffer.
+        guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: inputFrameCount) else { return }
+        // frameLength must be set BEFORE the copy: AVAudioPCMBuffer leaves the
+        // AudioBufferList's mDataByteSize at 0 while frameLength is 0, and
+        // CMSampleBufferCopyPCMDataIntoAudioBufferList requires sized destination
+        // buffers — otherwise it fails with kCMSampleBufferError_RequiredParameterMissing.
+        pcmBuffer.frameLength = inputFrameCount
+        let copyStatus = CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            adjusted, at: 0, frameCount: Int32(inputFrameCount),
+            into: pcmBuffer.mutableAudioBufferList)
+        guard copyStatus == noErr else { return }
+
+        // f. Convert to 48 kHz mono LPCM via the block-based API. Each input
+        //    buffer is converted independently: the input block hands off
+        //    `pcmBuffer` once, then returns nil with .endOfStream. Two
+        //    AVAudioConverter contract details drive this shape (both verified
+        //    with a standalone harness): returning nil with .haveData is a
+        //    contract violation that errors every conversion, and a returned
+        //    endOfStream LATCHES the converter's ended state so every later
+        //    conversion produces 0 frames — hence converter.reset() per buffer.
+        let outCapacity = AVAudioFrameCount(
+            ceil(Double(inputFrameCount) * 48000.0 / inputFormat.sampleRate) + 64)
+        guard let outBuffer = AVAudioPCMBuffer(pcmFormat: micOutputFormat, frameCapacity: outCapacity) else { return }
+
+        var hasSuppliedInput = false
+        var conversionError: NSError?
+        converter.reset()
+        let outputStatus = converter.convert(to: outBuffer, error: &conversionError) { _, statusOut in
+            if !hasSuppliedInput {
+                hasSuppliedInput = true
+                statusOut.pointee = .haveData
+                return pcmBuffer
+            }
+            statusOut.pointee = .endOfStream
+            return nil
+        }
+        if conversionError != nil { return }
+        guard outputStatus != .error else { return }
+        // The converter may buffer some input (resampler latency) and produce 0
+        // frames for a given call — those frames come out on a later call.
+        guard outBuffer.frameLength > 0 else { return }
+
+        // g. Wrap the converted PCM buffer in a new CMSampleBuffer tagged at
+        //    48 kHz, then append it to the writer input.
+        var outputFormatDesc: CMFormatDescription?
+        CMAudioFormatDescriptionCreate(
+            allocator: nil,
+            asbd: micOutputFormat.streamDescription,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &outputFormatDesc)
+        guard let formatDescription = outputFormatDesc else { return }
+
+        let pts = CMTimeConvertScale(
+            CMSampleBufferGetPresentationTimeStamp(adjusted),
+            timescale: 48000,
+            method: .default)
+        let duration = CMTime(value: Int64(outBuffer.frameLength), timescale: 48000)
+        var timing = CMSampleTimingInfo(
+            duration: duration,
+            presentationTimeStamp: pts,
+            decodeTimeStamp: .invalid)
+
+        // Copy the converted frames into a CMBlockBuffer and wrap it in a ready
+        // CMSampleBuffer. CMSampleBufferSetDataBufferFromAudioBufferList is
+        // deliberately NOT used here: it fails with
+        // kCMSampleBufferError_RequiredParameterMissing in this usage (verified
+        // with a standalone repro), which silently dropped every mic sample.
+        let dataLength = Int(outBuffer.frameLength) * Int(micOutputFormat.streamDescription.pointee.mBytesPerFrame)
+        var blockBuffer: CMBlockBuffer?
+        let blockStatus = CMBlockBufferCreateWithMemoryBlock(
+            allocator: nil,
+            memoryBlock: nil,
+            blockLength: dataLength,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: dataLength,
+            flags: 0,
+            blockBufferOut: &blockBuffer)
+        guard blockStatus == noErr, let block = blockBuffer,
+              let srcData = outBuffer.mutableAudioBufferList.pointee.mBuffers.mData else { return }
+        // micOutputFormat is mono non-interleaved, so the buffer list is a single buffer.
+        let replaceStatus = CMBlockBufferReplaceDataBytes(
+            with: srcData, blockBuffer: block, offsetIntoDestination: 0, dataLength: dataLength)
+        guard replaceStatus == noErr else { return }
+
+        var convertedSampleBuffer: CMSampleBuffer?
+        let createStatus = CMSampleBufferCreate(
+            allocator: nil,
+            dataBuffer: block,
+            dataReady: true,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: formatDescription,
+            sampleCount: CMItemCount(outBuffer.frameLength),
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0,
+            sampleSizeArray: nil,
+            sampleBufferOut: &convertedSampleBuffer)
+        guard createStatus == noErr, let sampleBufferOut = convertedSampleBuffer else { return }
+
+        input.append(sampleBufferOut)
     }
 
     private func writeFrame(buffer: CVPixelBuffer, presentationTime: CMTime) {
@@ -641,8 +807,9 @@ private final class MP4WriterSession: @unchecked Sendable {
             }
             pendingAudioSamples.removeAll()
             for sample in pendingMicSamples {
-                if let mi = micAudioInput, mi.isReadyForMoreMediaData,
-                   let adjusted = sample.adjustingTime(by: pauseOffset) { mi.append(adjusted) }
+                if let mi = micAudioInput, mi.isReadyForMoreMediaData {
+                    appendConvertedMicSample(sample, to: mi)
+                }
             }
             pendingMicSamples.removeAll()
         }
