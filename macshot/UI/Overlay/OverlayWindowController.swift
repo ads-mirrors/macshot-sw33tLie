@@ -73,6 +73,7 @@ protocol OverlayWindowControllerDelegate: AnyObject {
     func overlayDidRequestScrollCapture(
         _ controller: OverlayWindowController, rect: NSRect, screen: NSScreen)
     func overlayDidRequestStopScrollCapture(_ controller: OverlayWindowController)
+    func overlayDidRequestCancelScrollCapture(_ controller: OverlayWindowController)
     func overlayDidRequestToggleAutoScroll(_ controller: OverlayWindowController)
     func overlayDidRequestAccessibilityPermission(_ controller: OverlayWindowController)
     func overlayDidRequestInputMonitoringPermission(_ controller: OverlayWindowController)
@@ -738,6 +739,10 @@ extension OverlayWindowController: OverlayViewDelegate {
 
     func overlayViewDidRequestStopScrollCapture() {
         overlayDelegate?.overlayDidRequestStopScrollCapture(self)
+    }
+
+    func overlayViewDidRequestCancelScrollCapture() {
+        overlayDelegate?.overlayDidRequestCancelScrollCapture(self)
     }
 
     func overlayViewDidRequestToggleAutoScroll() {

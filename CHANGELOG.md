@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Escape now cancels an in-progress scroll capture instead of finalizing it (#333).
+
 ## [4.2.2-beta.1] - 2026-07-11
 
 ### Added
