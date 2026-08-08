@@ -53,10 +53,13 @@ final class GIFEncoder {
         lock.lock()
         defer { lock.unlock() }
 
-        // Throttle to target fps
-        let keepEvery = max(1, sourceEstimatedFPS / targetFPS)
+        // Fractional decimation: keep a frame whenever the target timeline
+        // advances. Exact for any source/target fps pair (e.g. 24 -> 15), not
+        // only when target divides source evenly — mirrors GifskiExporter.
         inputFrameCount += 1
-        guard inputFrameCount % keepEvery == 0 else { return }
+        let prevTargetIndex = (inputFrameCount - 1) * targetFPS / sourceEstimatedFPS
+        let targetIndex = inputFrameCount * targetFPS / sourceEstimatedFPS
+        guard targetIndex > prevTargetIndex else { return }
 
         guard let dest = destination else { return }
 
