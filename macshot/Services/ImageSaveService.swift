@@ -210,19 +210,30 @@ enum ImageSaveService {
     }
 
     private static func uniqueFileURL(in dirURL: URL, filename: String) -> URL {
+        let base = (filename as NSString).deletingPathExtension
+        let ext = (filename as NSString).pathExtension
+
         var candidate = dirURL.appendingPathComponent(filename)
         guard FileManager.default.fileExists(atPath: candidate.path) else { return candidate }
 
-        let base = (filename as NSString).deletingPathExtension
-        let ext = (filename as NSString).pathExtension
+        // Walk "name (N)" until a free slot is found. The two sibling dedup
+        // loops in this app — ClipboardBackingStore.makeUniqueURL and
+        // AppDelegate.moveRecording — both cap the counter and fall back to a
+        // unique name (or nil) on exhaustion. Returning the last checked
+        // candidate here, as the old `while counter < 1000` loop did, hands
+        // back a path that already exists and the caller silently overwrites a
+        // saved screenshot. A timestamp-less filename template makes that
+        // reachable (every save collides), so fall back to a UUID-suffixed
+        // name instead of clobbering.
         var counter = 2
-        while counter < 1000 {
+        while FileManager.default.fileExists(atPath: candidate.path) {
             let nextName = ext.isEmpty ? "\(base) (\(counter))" : "\(base) (\(counter)).\(ext)"
             candidate = dirURL.appendingPathComponent(nextName)
-            if !FileManager.default.fileExists(atPath: candidate.path) {
-                return candidate
-            }
             counter += 1
+            if counter > 1000 {
+                let fallback = ext.isEmpty ? "\(base) \(UUID().uuidString)" : "\(base) \(UUID().uuidString).\(ext)"
+                return dirURL.appendingPathComponent(fallback)
+            }
         }
         return candidate
     }
