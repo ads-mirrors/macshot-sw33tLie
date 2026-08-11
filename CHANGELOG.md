@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Video editor timecode rounding** — the timeline's tenths-of-a-second digit could read one low (e.g. 2.3s shown as "0:02.2") because it was truncated from a floating-point subtraction instead of rounded. Deriving minutes/seconds/tenths from a single rounded value fixes the digit and the boundary roll-over (1.999s now shows "0:02.0", not "0:01.9").
+
 ## [4.2.2-beta.1] - 2026-07-11
 
 ### Added
