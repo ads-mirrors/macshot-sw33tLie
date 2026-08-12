@@ -2949,6 +2949,26 @@ extension AppDelegate: OverlayWindowControllerDelegate {
         // onSessionDone fires asynchronously via handleScrollCaptureCompleted
     }
 
+    func overlayDidRequestCancelScrollCapture(_ controller: OverlayWindowController) {
+        // Esc cancels scroll capture: tear down WITHOUT delivering an image
+        // (cancelSession never fires onSessionDone), so nothing is saved, copied,
+        // or added to history. Mirrors the Accessibility-denied teardown block.
+        let captureController = scrollCaptureController
+        scrollCaptureController = nil
+        // Detach callbacks first so even an already-in-flight initial capture
+        // cannot report completion after cancellation.
+        captureController?.onStripAdded = nil
+        captureController?.onPreviewUpdated = nil
+        captureController?.onAutoScrollStarted = nil
+        captureController?.onSessionDone = nil
+        captureController?.cancelSession()
+        scrollCapturePreviewPanel?.close()
+        scrollCapturePreviewPanel = nil
+        scrollCaptureOverlayController?.setScrollCaptureState(isActive: false)
+        scrollCaptureOverlayController = nil
+        dismissOverlays()
+    }
+
     func overlayDidRequestAccessibilityPermission(_ controller: OverlayWindowController) {
         dismissOverlays()
         let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary

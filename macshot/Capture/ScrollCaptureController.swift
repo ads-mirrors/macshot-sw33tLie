@@ -32,6 +32,7 @@ final class ScrollCaptureController {
     private(set) var stitchedPixelSize: CGSize = .zero
     private(set) var isActive: Bool = false
     private(set) var frozenTopHeight: CGFloat = 0
+    private var isCancelled: Bool = false
 
     /// Current estimated total height of the final image (points).
     var estimatedTotalHeight: CGFloat {
@@ -123,7 +124,7 @@ final class ScrollCaptureController {
     // MARK: - Session
 
     func startSession() async {
-        guard !isActive else { return }
+        guard !isActive, !isCancelled else { return }
 
         let ud = UserDefaults.standard
         autoScrollEnabled = ud.object(forKey: "scrollAutoScrollEnabled") as? Bool ?? false
@@ -146,9 +147,10 @@ final class ScrollCaptureController {
 
         // Capture first settled frame
         guard let firstFrame = await captureSettledFrame() else {
-            onSessionDone?(nil)
+            if !isCancelled { onSessionDone?(nil) }
             return
         }
+        guard !isCancelled else { return }
 
         isActive = true
         shotA = nil
@@ -203,7 +205,11 @@ final class ScrollCaptureController {
     }
 
     func cancelSession() {
-        guard isActive else { return }
+        // Cancellation is also valid while the initial settled frame is being
+        // captured, before `isActive` becomes true. The cancelled flag keeps
+        // that asynchronous startup from installing monitors after the UI has
+        // already been dismissed.
+        isCancelled = true
         isActive = false
 
         autoScrollTask?.cancel(); autoScrollTask = nil
@@ -307,6 +313,7 @@ final class ScrollCaptureController {
         var waitNs: UInt64 = 10_000_000  // 10ms
 
         for _ in 0..<30 {
+            guard !isCancelled else { return nil }
             guard let cg = captureFrame() else {
                 try? await Task.sleep(nanoseconds: 30_000_000)
                 continue
@@ -318,6 +325,7 @@ final class ScrollCaptureController {
                     cont.resume(returning: bitmapRep.tiffRepresentation)
                 }
             }
+            guard !isCancelled else { return nil }
             guard let currentTIFF = tiffData else {
                 try? await Task.sleep(nanoseconds: waitNs)
                 waitNs = min(waitNs * 3 / 2, 80_000_000)

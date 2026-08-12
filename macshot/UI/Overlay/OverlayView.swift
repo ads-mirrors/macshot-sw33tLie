@@ -24,6 +24,7 @@ protocol OverlayViewDelegate: AnyObject {
     func overlayViewDidRequestDetach()
     func overlayViewDidRequestScrollCapture(rect: NSRect)
     func overlayViewDidRequestStopScrollCapture()
+    func overlayViewDidRequestCancelScrollCapture()
     func overlayViewDidRequestToggleAutoScroll()
     func overlayViewDidRequestAccessibilityPermission()
     func overlayViewDidRequestInputMonitoringPermission()
@@ -817,7 +818,7 @@ class OverlayView: NSView {
         let handleScrollKey: (NSEvent) -> Void = { [weak self] event in
             guard let self = self, self.isScrollCapturing else { return }
             if event.keyCode == 53 {  // Escape
-                self.overlayDelegate?.overlayViewDidRequestStopScrollCapture()
+                self.overlayDelegate?.overlayViewDidRequestCancelScrollCapture()
             }
         }
         scrollCaptureKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
@@ -9005,7 +9006,7 @@ class OverlayView: NSView {
         switch event.keyCode {
         case 53:  // Escape
             if isScrollCapturing {
-                overlayDelegate?.overlayViewDidRequestStopScrollCapture()
+                overlayDelegate?.overlayViewDidRequestCancelScrollCapture()
                 return
             }
             if isAnchoredSelecting {
