@@ -10,9 +10,7 @@ import CoreVideo
 final class GIFEncoder {
 
     private let url: URL
-    private let delayTime: Float   // seconds per frame
     private var destination: CGImageDestination?
-    private let frameProperties: [CFString: Any]
     private let gifProperties: [CFString: Any]
     private var frameCount = 0
     private let lock = NSLock()
@@ -28,14 +26,6 @@ final class GIFEncoder {
         // Cap GIF at 30fps for reasonable file size
         let gifFPS = min(fps, 30)
         self.targetFPS = gifFPS
-        self.delayTime = 1.0 / Float(gifFPS)
-
-        frameProperties = [
-            kCGImagePropertyGIFDictionary: [
-                kCGImagePropertyGIFDelayTime: delayTime,
-                kCGImagePropertyGIFLoopCount: 0,  // 0 = infinite
-            ] as [CFString: Any]
-        ]
         gifProperties = [
             kCGImagePropertyGIFDictionary: [
                 kCGImagePropertyGIFLoopCount: 0,
@@ -53,10 +43,13 @@ final class GIFEncoder {
         lock.lock()
         defer { lock.unlock() }
 
-        // Throttle to target fps
-        let keepEvery = max(1, sourceEstimatedFPS / targetFPS)
+        // Fractional decimation: keep a frame whenever the target timeline
+        // advances. Exact for any source/target fps pair (e.g. 24 -> 15), not
+        // only when target divides source evenly — mirrors GifskiExporter.
         inputFrameCount += 1
-        guard inputFrameCount % keepEvery == 0 else { return }
+        let prevTargetIndex = (inputFrameCount - 1) * targetFPS / sourceEstimatedFPS
+        let targetIndex = inputFrameCount * targetFPS / sourceEstimatedFPS
+        guard targetIndex > prevTargetIndex else { return }
 
         guard let dest = destination else { return }
 
@@ -98,8 +91,24 @@ final class GIFEncoder {
         CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
 
         guard let cgImage = ownedCtx.makeImage() else { return }
-        CGImageDestinationAddImage(dest, cgImage, frameProperties as CFDictionary)
+        CGImageDestinationAddImage(dest, cgImage, frameProperties(for: frameCount) as CFDictionary)
         frameCount += 1
+    }
+
+    /// GIF delays are stored in hundredths of a second. A fixed `1 / fps`
+    /// delay is rounded independently for every frame (for example, 1/15 to
+    /// 0.07), making a 15 fps GIF 5% too slow. Round cumulative presentation
+    /// times instead so the 0.06/0.07 pattern averages to the requested rate.
+    private func frameProperties(for outputFrameIndex: Int) -> [CFString: Any] {
+        let previousTick = Int((Double(outputFrameIndex) * 100.0 / Double(targetFPS)).rounded())
+        let nextTick = Int((Double(outputFrameIndex + 1) * 100.0 / Double(targetFPS)).rounded())
+        let delayTime = Float(max(1, nextTick - previousTick)) / 100.0
+        return [
+            kCGImagePropertyGIFDictionary: [
+                kCGImagePropertyGIFDelayTime: delayTime,
+                kCGImagePropertyGIFLoopCount: 0,  // 0 = infinite
+            ] as [CFString: Any]
+        ]
     }
 
     func finish() {
