@@ -143,13 +143,12 @@ enum ImageSaveService {
                 return
             }
 
-            let fileURL = uniqueFileURL(in: dirURL, filename: filename)
             do {
-                try imageData.write(to: fileURL)
+                try writeWithoutOverwriting(imageData, in: dirURL, filename: filename)
                 completionOnMain(completion, true)
             } catch {
                 #if DEBUG
-                NSLog("macshot: failed to save screenshot to \(fileURL.path): \(error.localizedDescription)")
+                NSLog("macshot: failed to save screenshot in \(dirURL.path): \(error.localizedDescription)")
                 #endif
                 completionOnMain(completion, false)
             }
@@ -209,22 +208,45 @@ enum ImageSaveService {
         }
     }
 
-    private static func uniqueFileURL(in dirURL: URL, filename: String) -> URL {
-        var candidate = dirURL.appendingPathComponent(filename)
-        guard FileManager.default.fileExists(atPath: candidate.path) else { return candidate }
-
+    /// Write to the preferred filename without ever replacing an existing
+    /// item. Filename selection and creation must be one operation: separate
+    /// `fileExists` and `write` calls let concurrent saves select the same
+    /// free path and race, silently replacing one capture.
+    private static func writeWithoutOverwriting(_ data: Data,
+                                                in dirURL: URL,
+                                                filename: String) throws {
         let base = (filename as NSString).deletingPathExtension
         let ext = (filename as NSString).pathExtension
+        var candidate = dirURL.appendingPathComponent(filename)
         var counter = 2
-        while counter < 1000 {
-            let nextName = ext.isEmpty ? "\(base) (\(counter))" : "\(base) (\(counter)).\(ext)"
-            candidate = dirURL.appendingPathComponent(nextName)
-            if !FileManager.default.fileExists(atPath: candidate.path) {
-                return candidate
+
+        while true {
+            do {
+                try data.write(to: candidate, options: .withoutOverwriting)
+                return
+            } catch {
+                let nsError = error as NSError
+                guard nsError.domain == NSCocoaErrorDomain,
+                      nsError.code == CocoaError.Code.fileWriteFileExists.rawValue else {
+                    throw error
+                }
+                if counter < 1000 {
+                    let nextName = ext.isEmpty
+                        ? "\(base) (\(counter))"
+                        : "\(base) (\(counter)).\(ext)"
+                    candidate = dirURL.appendingPathComponent(nextName)
+                    counter += 1
+                } else {
+                    // UUID collisions are extraordinarily unlikely, but the
+                    // loop deliberately retries even that case so this method
+                    // maintains a strict no-overwrite guarantee.
+                    let uuidName = ext.isEmpty
+                        ? "\(base) \(UUID().uuidString)"
+                        : "\(base) \(UUID().uuidString).\(ext)"
+                    candidate = dirURL.appendingPathComponent(uuidName)
+                }
             }
-            counter += 1
         }
-        return candidate
     }
 
     private static func completionOnMain(_ completion: Completion?, _ success: Bool) {
