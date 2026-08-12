@@ -233,6 +233,9 @@ private final class VideoEditorView: NSView {
     private var statusMessage: String?
     private var statusIsError: Bool = false
     private var statusTimer: Timer?
+    /// Guards against re-entrant Save/Copy while an MP4 export is running
+    /// (#323 — users repeatedly clicked Save with no progress feedback).
+    private var isExporting: Bool = false
 
     // Layout
     private let timelinePad: CGFloat = 20
@@ -1564,7 +1567,61 @@ private final class VideoEditorView: NSView {
         needsDisplay = true
     }
 
+    /// Runs the correct MP4 export pipeline (custom reencode for non-High
+    /// quality, else AVAssetExportSession) and surfaces progress as a
+    /// persistent "Exporting... X%" status — the same feedback GIF export
+    /// already gives (#323). Calls `completion(success)` on the main thread.
+    private func performExport(asset: AVAsset, timeRange: CMTimeRange, outputURL: URL, completion: @escaping (Bool) -> Void) {
+        // Entry points are guarded too, but keep the invariant at the shared
+        // asynchronous boundary so a future caller cannot start two exports.
+        guard !isExporting else {
+            completion(false)
+            return
+        }
+        isExporting = true
+        needsDisplay = true
+        let onProgress: (Double) -> Void = { [weak self] fraction in
+            guard fraction.isFinite else { return }
+            let percent = Int(max(0, min(1, fraction)) * 100)
+            DispatchQueue.main.async {
+                self?.showStatus(String(format: L("Exporting...") + " %d%%", percent), persist: true)
+            }
+        }
+        let done: (Bool) -> Void = { [weak self] success in
+            DispatchQueue.main.async {
+                self?.isExporting = false
+                self?.needsDisplay = true
+                completion(success)
+            }
+        }
+        onProgress(0)
+
+        if exportQuality != .high {
+            reencodeExport(asset: asset, timeRange: timeRange, outputURL: outputURL, progress: onProgress, completion: done)
+        } else {
+            guard let session = exportSession(asset: asset, timeRange: timeRange, outputURL: outputURL) else {
+                done(false)
+                return
+            }
+            // AVAssetExportSession has no per-frame callback — poll its
+            // `progress` on a main run-loop timer while the export runs.
+            let timer = Timer(timeInterval: 0.2, repeats: true) { [weak session] t in
+                guard let session = session else { t.invalidate(); return }
+                onProgress(Double(session.progress))
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            Task {
+                await session.export()
+                await MainActor.run {
+                    timer.invalidate()
+                    done(session.status == .completed)
+                }
+            }
+        }
+    }
+
     private func copyToClipboard() {
+        guard !isExporting else { return }
         // If GIF mode is selected but no GIF has been saved yet, convert to a temp GIF first
         if exportAsGIF && !isGIF && !(savedURL?.pathExtension.lowercased() == "gif") {
             showStatus(L("Converting to GIF…"))
@@ -1626,25 +1683,9 @@ private final class VideoEditorView: NSView {
         let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".\(videoURL.pathExtension)")
         let timeRange = CMTimeRange(start: CMTime(seconds: trimStart, preferredTimescale: 600),
                                     end: CMTime(seconds: trimEnd, preferredTimescale: 600))
-        // reencodeExport can complete from its background queue on early
-        // exits — always hop to main before touching pasteboard/UI.
-        let done: (Bool) -> Void = { success in
-            DispatchQueue.main.async {
-                if !success { try? FileManager.default.removeItem(at: tmpURL) }
-                completion(success ? tmpURL : nil)
-            }
-        }
-        if exportQuality != .high {
-            reencodeExport(asset: asset, timeRange: timeRange, outputURL: tmpURL, completion: done)
-        } else {
-            guard let session = exportSession(asset: asset, timeRange: timeRange, outputURL: tmpURL) else {
-                done(false)
-                return
-            }
-            Task {
-                await session.export()
-                await MainActor.run { done(session.status == .completed) }
-            }
+        performExport(asset: asset, timeRange: timeRange, outputURL: tmpURL) { success in
+            if !success { try? FileManager.default.removeItem(at: tmpURL) }
+            completion(success ? tmpURL : nil)
         }
     }
 
@@ -1726,6 +1767,7 @@ private final class VideoEditorView: NSView {
     }
 
     private func saveVideo() {
+        guard !isExporting else { return }
         if exportAsGIF && !isGIF {
             // GIF mode: need Save As panel since extension changes
             saveVideoAs()
@@ -1746,6 +1788,7 @@ private final class VideoEditorView: NSView {
     }
 
     private func saveVideoAs() {
+        guard !isExporting else { return }
         let panel = NSSavePanel()
         let saveAsGIF = exportAsGIF && !isGIF
         panel.allowedContentTypes = saveAsGIF ? [.gif] : (isGIF ? [.gif] : [.mpeg4Movie])
@@ -1754,7 +1797,8 @@ private final class VideoEditorView: NSView {
         panel.directoryURL = SaveDirectoryAccess.recordingDirectoryHint()
         panel.level = .statusBar + 3
         panel.begin { [weak self] response in
-            guard let self = self, response == .OK, let url = panel.url else { return }
+            guard let self = self, !self.isExporting,
+                  response == .OK, let url = panel.url else { return }
             if saveAsGIF {
                 self.convertToGIF(destURL: url)
             } else {
@@ -2099,7 +2143,10 @@ private final class VideoEditorView: NSView {
     }
 
     private func saveToDestination(_ destURL: URL, dirURL: URL?) {
-        let needsRecompress = exportQuality != .high
+        guard !isExporting else {
+            if let dirURL = dirURL { SaveDirectoryAccess.stopAccessing(url: dirURL) }
+            return
+        }
         let needsExport = hasPendingEdits
 
         if !needsExport {
@@ -2134,14 +2181,14 @@ private final class VideoEditorView: NSView {
         }
 
         guard let asset = asset else { return }
-        showStatus(L("Exporting..."))
+        showStatus(L("Exporting..."), persist: true)
 
         let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".\(videoURL.pathExtension)")
         let startTime = CMTime(seconds: trimStart, preferredTimescale: 600)
         let endTime = CMTime(seconds: trimEnd, preferredTimescale: 600)
         let timeRange = CMTimeRange(start: startTime, end: endTime)
 
-        let onCompletion: (Bool) -> Void = { [weak self] success in
+        performExport(asset: asset, timeRange: timeRange, outputURL: tmpURL) { [weak self] success in
             guard let self = self else { return }
             if success {
                 try? FileManager.default.removeItem(at: destURL)
@@ -2159,25 +2206,12 @@ private final class VideoEditorView: NSView {
                 try? FileManager.default.removeItem(at: tmpURL)
             }
         }
-
-        if needsRecompress {
-            reencodeExport(asset: asset, timeRange: timeRange, outputURL: tmpURL, completion: onCompletion)
-        } else {
-            guard let session = exportSession(asset: asset, timeRange: timeRange, outputURL: tmpURL) else {
-                showStatus(L("Export failed"), isError: true)
-                return
-            }
-            Task {
-                await session.export()
-                await MainActor.run { onCompletion(session.status == .completed) }
-            }
-        }
     }
 
     /// Re-encode pipeline with explicit bitrate control via AVAssetReader/Writer.
     /// Used when the user selects a non-High quality preset so the bitrate
     /// actually takes effect (AVAssetExportSession presets hardcode bitrate).
-    private func reencodeExport(asset: AVAsset, timeRange: CMTimeRange, outputURL: URL, completion: @escaping (Bool) -> Void) {
+    private func reencodeExport(asset: AVAsset, timeRange: CMTimeRange, outputURL: URL, progress: ((Double) -> Void)? = nil, completion: @escaping (Bool) -> Void) {
         guard let videoTrack = asset.tracks(withMediaType: .video).first else {
             completion(false)
             return
@@ -2328,7 +2362,10 @@ private final class VideoEditorView: NSView {
                 let videoQueue = DispatchQueue(label: "macshot.export.video")
                 let audioQueue = DispatchQueue(label: "macshot.export.audio")
 
-                // Pump video
+                // Pump video. Progress is driven off the video track only
+                // (audio finishes near-instantly and would muddy the estimate).
+                let totalSeconds = CMTimeGetSeconds(readerTimeRange.duration)
+                var lastReportedPct = -1
                 group.enter()
                 videoInput.requestMediaDataWhenReady(on: videoQueue) {
                     while videoInput.isReadyForMoreMediaData {
@@ -2346,6 +2383,16 @@ private final class VideoEditorView: NSView {
                                 videoInput.markAsFinished()
                                 group.leave()
                                 return
+                            }
+                        }
+                        // Report processed-time / total-time, throttled to whole
+                        // percent so the callback fires ~100x, not per frame.
+                        if let progress = progress, totalSeconds > 0 {
+                            let fraction = max(0, min(1, CMTimeGetSeconds(shifted) / totalSeconds))
+                            let pct = Int(fraction * 100)
+                            if pct != lastReportedPct {
+                                lastReportedPct = pct
+                                progress(Double(pct) / 100.0)
                             }
                         }
                     }
@@ -2389,6 +2436,7 @@ private final class VideoEditorView: NSView {
 
     #if !OFFLINE
     private func uploadVideo() {
+        guard !isExporting else { return }
         let provider = UserDefaults.standard.string(forKey: "uploadProvider") ?? "imgbb"
 
         if provider == "gdrive" && !GoogleDriveUploader.shared.isSignedIn {
