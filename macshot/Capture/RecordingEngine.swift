@@ -291,6 +291,20 @@ final class RecordingEngine: NSObject {
         session.addInput(deviceInput)
 
         let dataOutput = AVCaptureAudioDataOutput()
+        // Keep the delegate format stable even when a Bluetooth device changes
+        // profiles after capture starts. AVAssetWriter can encode a constant
+        // native PCM format to AAC, but changing sample formats within one
+        // writer track corrupts timing and pitch. Let AVFoundation normalize at
+        // the capture boundary instead of maintaining a second per-buffer
+        // converter in the writer.
+        dataOutput.audioSettings = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 48_000,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
         let delegate = MicCaptureDelegate()
         // Deliver mic samples straight to the queue-confined writer session.
         let writer = writerSession
