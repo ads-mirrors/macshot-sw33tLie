@@ -103,6 +103,7 @@ macshot/
 │   │   ├── MeasureToolHandler.swift    # Pixel ruler with 45° snap
 │   │   ├── NumberToolHandler.swift     # Auto-incrementing numbered circle
 │   │   ├── StampToolHandler.swift      # Emoji/image stamp + StampEmojis data
+│   │   ├── ScopedUndoTextView.swift    # NSTextView with view-owned undo history
 │   │   └── TextEditingController.swift # Text tool: NSTextView lifecycle, formatting, commit, cancel
 │   │
 │   ├── Popover/
@@ -210,6 +211,8 @@ TextEditingCanvas                — Coordinate transforms + annotation storage 
 ### Undo/Redo
 
 `UndoEntry` enum: `.added(Annotation)`, `.deleted(Annotation, Int)`, `.imageTransform(...)`. Stacks: `undoStack` / `redoStack`. Batch undo via `groupID` (e.g. auto-redact creates multiple annotations with same groupID, all undone together).
+
+**CRITICAL — transient `NSTextView` undo ownership:** `UndoManager` keeps undo-operation targets unowned. A disposable editable `NSTextView` that obtains the window's shared undo manager through the responder chain can therefore leave `_undoRedoTextOperation:` entries pointing at a deallocated view; the next Cmd+Z may crash in `_NSUndoStack popAndInvoke`. Every editable app-created text view with `allowsUndo = true` must use `ScopedUndoTextView` (or subclass it), never a plain `NSTextView`. Call `discardUndoHistory()` before removing and releasing an editing session. Read-only text views that cannot register editing actions are exempt. Do not move transient text editing back onto a window-level undo manager.
 
 ### Coordinate Systems
 - **Overlay:** View coordinates = screen frame, bottom-left origin (AppKit)

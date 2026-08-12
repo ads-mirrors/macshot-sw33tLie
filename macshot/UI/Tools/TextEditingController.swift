@@ -51,7 +51,7 @@ class TextEditingController {
 
     // MARK: - NSTextView
 
-    private(set) var textView: NSTextView?
+    private(set) var textView: ScopedUndoTextView?
     private(set) var scrollView: NSScrollView?
 
     var isEditing: Bool { textView != nil }
@@ -285,8 +285,8 @@ class TextEditingController {
         layoutManager.addTextContainer(textContainer)
         textStorage.addLayoutManager(layoutManager)
 
-        let tv = NSTextView(frame: NSRect(origin: .zero, size: viewFrame.size),
-                            textContainer: textContainer)
+        let tv = ScopedUndoTextView(frame: NSRect(origin: .zero, size: viewFrame.size),
+                                    textContainer: textContainer)
         tv.isRichText = true
         tv.allowsUndo = true
         tv.drawsBackground = false
@@ -434,6 +434,10 @@ class TextEditingController {
     }
 
     func dismiss() {
+        // Do not leave text operations pointing at a view that is about to be
+        // removed. The scoped manager normally dies with the view; clearing it
+        // explicitly also makes repeated show/dismiss calls safe.
+        textView?.discardUndoHistory()
         scrollView?.removeFromSuperview()
         scrollView = nil
         textView = nil

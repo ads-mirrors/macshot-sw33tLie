@@ -3,7 +3,7 @@ import Cocoa
 class OCRResultController: NSObject {
 
     private var window: NSPanel?
-    private var textView: NSTextView?
+    private var textView: ScopedUndoTextView?
     private var charCountLabel: NSTextField?
     private var translateButton: NSButton?
     private var langPopup: NSPopUpButton?
@@ -214,7 +214,7 @@ class OCRResultController: NSObject {
         scrollView.drawsBackground = false
         cv.addSubview(scrollView)
 
-        let tv = NSTextView(frame: NSRect(x: 0, y: 0, width: rightW, height: textAreaH))
+        let tv = ScopedUndoTextView(frame: NSRect(x: 0, y: 0, width: rightW, height: textAreaH))
         tv.isEditable = true
         tv.isSelectable = true
         tv.isRichText = false
@@ -330,6 +330,8 @@ class OCRResultController: NSObject {
     }
 
     private func tearDown() {
+        textView?.discardUndoHistory()
+        textView = nil
         window?.delegate = nil
         window = nil
         onClose?()

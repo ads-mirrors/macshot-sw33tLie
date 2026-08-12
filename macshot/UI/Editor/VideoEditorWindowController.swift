@@ -186,7 +186,7 @@ private final class VideoEditorView: NSView {
     // Inline text-editor state for "Edit Text…". Lives on the editor view so
     // we can place a borderless NSTextView over the player at the same rect
     // the EffectsPreviewOverlayView is showing.
-    private var inlineTextEditor: NSTextView?
+    private var inlineTextEditor: InlineVideoTextView?
     private var inlineTextEditorScrollView: NSScrollView?
     private var inlineTextEditingSegmentID: UUID?
     private var pausedForTextEdit: Bool = false
@@ -3050,6 +3050,7 @@ private final class VideoEditorView: NSView {
             return
         }
         let wasEditing = inlineTextEditingSegmentID != nil
+        inlineTextEditor?.discardUndoHistory()
         inlineTextEditorScrollView?.removeFromSuperview()
         inlineTextEditor = nil
         inlineTextEditorScrollView = nil
@@ -3223,7 +3224,7 @@ extension VideoEditorView: NSTextViewDelegate {
     }
 }
 
-private final class InlineVideoTextView: NSTextView {
+private final class InlineVideoTextView: ScopedUndoTextView {
     var horizontalTextInset: CGFloat = 0 {
         didSet { centerTextVertically() }
     }
