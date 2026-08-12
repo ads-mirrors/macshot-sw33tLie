@@ -1,11 +1,23 @@
 # Changelog
 
-## [Unreleased]
+## [4.2.2-beta.2] - 2026-08-12
+
+### Added
+
+- **Video text style panel** — selected text effects now expose font family, size, bold/italic, text/background colors, background style, glyph outline, and alignment controls with live paused-preview updates. Styles carry forward to new text segments and remain compatible with saved projects. (#307)
+- **Visible + Effect control** — video effects can be added from the toolbar at the playhead, with nearest-gap placement when the requested time is occupied. (#307)
+
+### Changed
+
+- **WYSIWYG video zoom editing** — zoom selections keep the video aspect ratio, remain within valid bounds, and match the region rendered by preview and export. (#301, #307)
 
 ### Fixed
 
+- Transient text editors now own and discard their undo history, preventing Cmd+Z crashes after an editor closes.
 - Escape now cancels an in-progress scroll capture instead of finalizing it (#333).
+- Screenshot filename de-duplication can no longer overwrite an existing file after exhausting numbered names or during concurrent saves (#344).
 - **Video editor timecode rounding** — the timeline's tenths-of-a-second digit could read one low (e.g. 2.3s shown as "0:02.2") because it was truncated from a floating-point subtraction instead of rounded. Deriving minutes/seconds/tenths from a single rounded value fixes the digit and the boundary roll-over (1.999s now shows "0:02.0", not "0:01.9").
+- Built-in GIF exports now preserve playback speed for non-divisor frame-rate conversions and account for GIF centisecond delay rounding (#340).
 - MP4 exports now show persistent percentage progress and ignore duplicate Save/Copy actions while processing (#323).
 - Microphone capture now keeps a stable 48 kHz mono format when Bluetooth headsets switch audio profiles, preventing slowed and pitch-shifted recordings (#326).
 
