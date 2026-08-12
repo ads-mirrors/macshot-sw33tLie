@@ -1286,10 +1286,16 @@ private final class VideoEditorView: NSView {
     }
 
     private func formatTime(_ seconds: Double) -> String {
-        let m = Int(seconds) / 60
-        let s = Int(seconds) % 60
-        let ms = Int((seconds - floor(seconds)) * 10)
-        return String(format: "%d:%02d.%d", m, s, ms)
+        // Derive every field from the rounded total tenths-of-a-second. Computing
+        // the tenths digit separately as `(seconds - floor(seconds)) * 10` truncates
+        // a value like 2.3s (whose Double is 2.2999…) to ".2" instead of ".3", and
+        // never rounds up at the boundary — 1.999s displayed as "0:01.9" instead of
+        // "0:02.0". Rounding once at the top keeps minutes/seconds/tenths consistent.
+        let totalTenths = Int((seconds * 10).rounded())
+        let m = totalTenths / 600
+        let s = (totalTenths / 10) % 60
+        let tenths = totalTenths % 10
+        return String(format: "%d:%02d.%d", m, s, tenths)
     }
 
     // MARK: - Mouse
