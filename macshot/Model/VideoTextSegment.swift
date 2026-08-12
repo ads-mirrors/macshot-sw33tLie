@@ -6,10 +6,10 @@ import CoreGraphics
 /// the source-asset clock and `rect` is normalized to the natural-image
 /// bounds (origin top-left).
 ///
-/// Style is intentionally simpler than the screenshot text tool: one system
-/// font, weight (regular/bold), italic toggle, color, optional background
-/// fill, alignment, fade in/out. Per-character formatting is deliberately
-/// not supported — video labels are visually consistent strings.
+/// Style is intentionally simpler than the screenshot text tool: one font
+/// family, weight (regular/bold), italic toggle, color, optional background
+/// fill and outline, alignment, fade in/out. Per-character formatting is
+/// deliberately not supported — video labels are visually consistent strings.
 final class VideoTextSegment: Codable {
 
     static let minDuration: Double = 0.3
@@ -35,6 +35,7 @@ final class VideoTextSegment: Codable {
         var a: Double
 
         static let white = RGBA(r: 1, g: 1, b: 1, a: 1)
+        static let black = RGBA(r: 0, g: 0, b: 0, a: 1)
         static let blackTransparent = RGBA(r: 0, g: 0, b: 0, a: 0.7)
     }
 
@@ -52,9 +53,20 @@ final class VideoTextSegment: Codable {
     var bold: Bool
     var italic: Bool
 
+    /// Font family name. The sentinel "System" selects the system UI font;
+    /// anything else is resolved by name at raster time (with a system-font
+    /// fallback when the family is not installed).
+    var fontFamily: String
+
     var textColor: RGBA
     var bgStyle: BackgroundStyle
     var bgColor: RGBA
+
+    /// Per-glyph outline stroked behind the text fill. `outlineWidth` is in
+    /// points at the same 1080p reference scale as `fontSize`.
+    var outlineEnabled: Bool
+    var outlineColor: RGBA
+    var outlineWidth: CGFloat
 
     var alignment: Alignment
 
@@ -69,9 +81,13 @@ final class VideoTextSegment: Codable {
          fontSize: CGFloat = 48,
          bold: Bool = true,
          italic: Bool = false,
+         fontFamily: String = "System",
          textColor: RGBA = .white,
          bgStyle: BackgroundStyle = .rounded,
          bgColor: RGBA = .blackTransparent,
+         outlineEnabled: Bool = false,
+         outlineColor: RGBA = .black,
+         outlineWidth: CGFloat = 2,
          alignment: Alignment = .center,
          fadeIn: Double = defaultFade,
          fadeOut: Double = defaultFade) {
@@ -83,12 +99,76 @@ final class VideoTextSegment: Codable {
         self.fontSize = fontSize
         self.bold = bold
         self.italic = italic
+        self.fontFamily = fontFamily
         self.textColor = textColor
         self.bgStyle = bgStyle
         self.bgColor = bgColor
+        self.outlineEnabled = outlineEnabled
+        self.outlineColor = outlineColor
+        self.outlineWidth = outlineWidth
         self.alignment = alignment
         self.fadeIn = fadeIn
         self.fadeOut = fadeOut
+    }
+
+    // MARK: - Codable
+    //
+    // Explicit implementation (instead of the synthesized one) so segments
+    // serialized by older versions — which lack the font-family and outline
+    // keys — keep decoding: the new keys use `decodeIfPresent` + defaults.
+    // All pre-existing keys and their encoded shapes are unchanged.
+
+    private enum CodingKeys: String, CodingKey {
+        case id, startTime, endTime, rect, text
+        case fontSize, bold, italic, fontFamily
+        case textColor, bgStyle, bgColor
+        case outlineEnabled, outlineColor, outlineWidth
+        case alignment, fadeIn, fadeOut
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        startTime = try c.decode(Double.self, forKey: .startTime)
+        endTime = try c.decode(Double.self, forKey: .endTime)
+        rect = try c.decode(CGRect.self, forKey: .rect)
+        text = try c.decode(String.self, forKey: .text)
+        fontSize = try c.decode(CGFloat.self, forKey: .fontSize)
+        bold = try c.decode(Bool.self, forKey: .bold)
+        italic = try c.decode(Bool.self, forKey: .italic)
+        textColor = try c.decode(RGBA.self, forKey: .textColor)
+        bgStyle = try c.decode(BackgroundStyle.self, forKey: .bgStyle)
+        bgColor = try c.decode(RGBA.self, forKey: .bgColor)
+        alignment = try c.decode(Alignment.self, forKey: .alignment)
+        fadeIn = try c.decode(Double.self, forKey: .fadeIn)
+        fadeOut = try c.decode(Double.self, forKey: .fadeOut)
+        // Added later — absent in old archives, so fall back to defaults.
+        fontFamily = try c.decodeIfPresent(String.self, forKey: .fontFamily) ?? "System"
+        outlineEnabled = try c.decodeIfPresent(Bool.self, forKey: .outlineEnabled) ?? false
+        outlineColor = try c.decodeIfPresent(RGBA.self, forKey: .outlineColor) ?? .black
+        outlineWidth = try c.decodeIfPresent(CGFloat.self, forKey: .outlineWidth) ?? 2
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(startTime, forKey: .startTime)
+        try c.encode(endTime, forKey: .endTime)
+        try c.encode(rect, forKey: .rect)
+        try c.encode(text, forKey: .text)
+        try c.encode(fontSize, forKey: .fontSize)
+        try c.encode(bold, forKey: .bold)
+        try c.encode(italic, forKey: .italic)
+        try c.encode(fontFamily, forKey: .fontFamily)
+        try c.encode(textColor, forKey: .textColor)
+        try c.encode(bgStyle, forKey: .bgStyle)
+        try c.encode(bgColor, forKey: .bgColor)
+        try c.encode(outlineEnabled, forKey: .outlineEnabled)
+        try c.encode(outlineColor, forKey: .outlineColor)
+        try c.encode(outlineWidth, forKey: .outlineWidth)
+        try c.encode(alignment, forKey: .alignment)
+        try c.encode(fadeIn, forKey: .fadeIn)
+        try c.encode(fadeOut, forKey: .fadeOut)
     }
 
     var duration: Double { max(0, endTime - startTime) }
@@ -140,10 +220,104 @@ final class VideoTextSegment: Codable {
         let minSize: CGFloat = 0.04
         var x = max(0, min(1 - minSize, r.origin.x))
         var y = max(0, min(1 - minSize, r.origin.y))
-        var w = max(minSize, min(1 - x, r.size.width))
-        var h = max(minSize, min(1 - y, r.size.height))
+        let w = max(minSize, min(1 - x, r.size.width))
+        let h = max(minSize, min(1 - y, r.size.height))
         if x + w > 1 { x = 1 - w }
         if y + h > 1 { y = 1 - h }
         return CGRect(x: x, y: y, width: w, height: h)
+    }
+}
+
+
+// MARK: - Last-used style memory
+
+extension VideoTextSegment {
+    private static let lastStyleKey = "videoTextLastUsedStyle"
+    private static var cachedStyle: RememberedStyle?
+    private static var pendingStyleWrite: Task<Void, Never>?
+
+    /// Only visual defaults belong in preferences. Encoding a whole segment
+    /// would unnecessarily persist the user's caption text, timing, UUID and
+    /// position when all a future segment needs is its reusable appearance.
+    private struct RememberedStyle: Codable {
+        let fontSize: CGFloat
+        let bold: Bool
+        let italic: Bool
+        let fontFamily: String
+        let textColor: RGBA
+        let bgStyle: BackgroundStyle
+        let bgColor: RGBA
+        let outlineEnabled: Bool
+        let outlineColor: RGBA
+        let outlineWidth: CGFloat
+        let alignment: Alignment
+
+        init(_ segment: VideoTextSegment) {
+            fontSize = segment.fontSize
+            bold = segment.bold
+            italic = segment.italic
+            fontFamily = segment.fontFamily
+            textColor = segment.textColor
+            bgStyle = segment.bgStyle
+            bgColor = segment.bgColor
+            outlineEnabled = segment.outlineEnabled
+            outlineColor = segment.outlineColor
+            outlineWidth = segment.outlineWidth
+            alignment = segment.alignment
+        }
+
+        func apply(to segment: VideoTextSegment) {
+            segment.fontSize = fontSize
+            segment.bold = bold
+            segment.italic = italic
+            segment.fontFamily = fontFamily
+            segment.textColor = textColor
+            segment.bgStyle = bgStyle
+            segment.bgColor = bgColor
+            segment.outlineEnabled = outlineEnabled
+            segment.outlineColor = outlineColor
+            segment.outlineWidth = outlineWidth
+            segment.alignment = alignment
+        }
+    }
+
+    /// A new segment that starts with the style of the last edited text
+    /// segment (color, background, font family/size, bold/italic, outline,
+    /// alignment), so users don't have to re-apply the same styling for
+    /// every new segment.
+    static func withLastUsedStyle(startTime: Double, endTime: Double) -> VideoTextSegment {
+        let seg = VideoTextSegment(startTime: startTime, endTime: endTime)
+        if let cachedStyle {
+            cachedStyle.apply(to: seg)
+            return seg
+        }
+        guard let data = UserDefaults.standard.data(forKey: lastStyleKey),
+              let saved = try? JSONDecoder().decode(RememberedStyle.self, from: data) else {
+            return seg
+        }
+        cachedStyle = saved
+        // JSONDecoder ignores unknown keys, so this also migrates payloads
+        // written by the early implementation that encoded the full segment.
+        saved.apply(to: seg)
+        if let styleOnlyData = try? JSONEncoder().encode(saved), styleOnlyData != data {
+            UserDefaults.standard.set(styleOnlyData, forKey: lastStyleKey)
+        }
+        return seg
+    }
+
+    /// Persist this segment's style as the default for future segments.
+    func rememberStyle() {
+        let style = RememberedStyle(self)
+        Self.cachedStyle = style
+        Self.pendingStyleWrite?.cancel()
+        // Sliders emit many continuous changes. Keep the latest style in
+        // memory immediately so newly-added captions inherit it, but coalesce
+        // preference encoding/writes until the interaction settles.
+        Self.pendingStyleWrite = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled,
+                  let data = try? JSONEncoder().encode(style) else { return }
+            UserDefaults.standard.set(data, forKey: Self.lastStyleKey)
+        }
     }
 }

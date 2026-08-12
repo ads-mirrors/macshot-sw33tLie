@@ -159,6 +159,9 @@
 "Right-click to add points" = "Clic dreapta pentru a adauga puncte";
 "Hold 1 auto-vertical  ·  Hold 2 auto-horizontal" = "Tine 1 auto-vertical  ·  Tine 2 auto-orizontal";
 "Limit to selection" = "Limiteaza la selectie";
+"Effect" = "Efect";
+"Font" = "Font";
+"System" = "Sistem";
 
 /* Overlay / Canvas */
 "Click a window  ·  Drag for custom area  ·  F for full screen" = "Clic pe o fereastra  ·  Trage pentru zona personalizata  ·  F pentru ecran complet";

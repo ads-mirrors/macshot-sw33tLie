@@ -42,6 +42,10 @@ extension EffectsBandViewDelegate {
 @MainActor
 final class EffectsBandView: NSView {
 
+    private static let defaultSpeedFactor: Double = 2.0
+    private static let minimumDefaultSpeedSourceDuration =
+        VideoSpeedSegment.minCompDuration * defaultSpeedFactor
+
     // MARK: - Public state (owned by this view, read by the parent)
 
     weak var delegate: EffectsBandViewDelegate?
@@ -1410,14 +1414,28 @@ final class EffectsBandView: NSView {
     }
 
     private func showAddEffectMenu(at point: NSPoint, clickTime: Double) {
+        let menu = addEffectMenu(clickTime: clickTime)
+        menu.popUp(positioning: nil, at: point, in: self)
+    }
+
+    /// The same "add effect" menu as the band's context menu, reusable by the
+    /// editor toolbar's "+" button. Items insert at `clickTime` and are
+    /// enabled/disabled based on available gaps, exactly like the band menu.
+    func addEffectMenu(clickTime: Double) -> NSMenu {
         let menu = NSMenu()
         let zoomItem = NSMenuItem(title: L("Add Zoom"),
                                   action: #selector(handleAddZoomFromMenu(_:)),
                                   keyEquivalent: "")
         zoomItem.image = NSImage(systemSymbolName: "plus.magnifyingglass", accessibilityDescription: nil)
         zoomItem.target = self
-        if let g = zoomGapAtClickTime(clickTime) {
-            zoomItem.representedObject = AddEffectContext(clickTime: clickTime, gapStart: g.0, gapEnd: g.1)
+        if let g = zoomGapAtClickTime(clickTime) ?? nearestGap(to: clickTime,
+                                                               occupied: zoomSegments.map { ($0.startTime, $0.endTime) },
+                                                               minLength: VideoZoomSegment.minDuration) {
+            // If the playhead sits inside an existing segment, fall back to
+            // the nearest free gap instead of disabling the item — clamp the
+            // insertion point into that gap.
+            let t = min(max(clickTime, g.0), g.1)
+            zoomItem.representedObject = AddEffectContext(clickTime: t, gapStart: g.0, gapEnd: g.1)
             zoomItem.isEnabled = true
         } else {
             zoomItem.isEnabled = false
@@ -1445,8 +1463,11 @@ final class EffectsBandView: NSView {
                                     keyEquivalent: "")
         speedItem.image = NSImage(systemSymbolName: "forward.fill", accessibilityDescription: nil)
         speedItem.target = self
-        if let g = speedGapAtClickTime(clickTime) {
-            speedItem.representedObject = AddEffectContext(clickTime: clickTime, gapStart: g.0, gapEnd: g.1)
+        if let g = speedGapAtClickTime(clickTime) ?? nearestGap(to: clickTime,
+                                                                occupied: speedSegments.map { ($0.startTime, $0.endTime) },
+                                                                minLength: Self.minimumDefaultSpeedSourceDuration) {
+            let t = min(max(clickTime, g.0), g.1)
+            speedItem.representedObject = AddEffectContext(clickTime: t, gapStart: g.0, gapEnd: g.1)
             speedItem.isEnabled = true
         } else {
             speedItem.isEnabled = false
@@ -1469,7 +1490,7 @@ final class EffectsBandView: NSView {
         textItem.representedObject = AddEffectContext(clickTime: clickTime, gapStart: 0, gapEnd: duration)
         menu.addItem(textItem)
 
-        menu.popUp(positioning: nil, at: point, in: self)
+        return menu
     }
 
     private func attachAddEffectSubmenu(to menu: NSMenu, event: NSEvent) {
@@ -1484,13 +1505,16 @@ final class EffectsBandView: NSView {
             Double((p.x - row0Rect.minX) / max(row0Rect.width, 1)) * duration))
         let parent = NSMenuItem(title: L("Add effect"), action: nil, keyEquivalent: "")
         let sub = NSMenu()
-        let zoomGap = zoomGapAtClickTime(clickTime)
+        let zoomGap = zoomGapAtClickTime(clickTime) ?? nearestGap(to: clickTime,
+                                                                   occupied: zoomSegments.map { ($0.startTime, $0.endTime) },
+                                                                   minLength: VideoZoomSegment.minDuration)
         let zoomItem = NSMenuItem(title: L("Add Zoom"),
                                   action: #selector(handleAddZoomFromMenu(_:)),
                                   keyEquivalent: "")
         zoomItem.target = self
         if let g = zoomGap {
-            zoomItem.representedObject = AddEffectContext(clickTime: clickTime, gapStart: g.0, gapEnd: g.1)
+            let t = min(max(clickTime, g.0), g.1)
+            zoomItem.representedObject = AddEffectContext(clickTime: t, gapStart: g.0, gapEnd: g.1)
             zoomItem.isEnabled = true
         } else {
             zoomItem.isEnabled = false
@@ -1512,8 +1536,11 @@ final class EffectsBandView: NSView {
                                     action: #selector(handleAddSpeedFromMenu(_:)),
                                     keyEquivalent: "")
         speedItem.target = self
-        if let g = speedGapAtClickTime(clickTime) {
-            speedItem.representedObject = AddEffectContext(clickTime: clickTime, gapStart: g.0, gapEnd: g.1)
+        if let g = speedGapAtClickTime(clickTime) ?? nearestGap(to: clickTime,
+                                                                occupied: speedSegments.map { ($0.startTime, $0.endTime) },
+                                                                minLength: Self.minimumDefaultSpeedSourceDuration) {
+            let t = min(max(clickTime, g.0), g.1)
+            speedItem.representedObject = AddEffectContext(clickTime: t, gapStart: g.0, gapEnd: g.1)
             speedItem.isEnabled = true
         } else {
             speedItem.isEnabled = false
@@ -1547,14 +1574,14 @@ final class EffectsBandView: NSView {
         for s in speeds {
             if s.startTime > cursor + 0.001 {
                 if t >= cursor && t <= s.startTime
-                    && (s.startTime - cursor) >= 0.3 {
+                    && (s.startTime - cursor) >= Self.minimumDefaultSpeedSourceDuration {
                     return (cursor, s.startTime)
                 }
             }
             cursor = max(cursor, s.endTime)
         }
         if cursor < duration - 0.001 && t >= cursor && t <= duration
-            && (duration - cursor) >= 0.3 {
+            && (duration - cursor) >= Self.minimumDefaultSpeedSourceDuration {
             return (cursor, duration)
         }
         return nil
@@ -1562,6 +1589,30 @@ final class EffectsBandView: NSView {
 
     /// Returns the (start, end) of the zoom-free interval containing `t`, or
     /// nil if `t` is inside a zoom segment.
+    /// The free gap (length >= minLength) whose midpoint is closest to `t`,
+    /// or nil when the timeline has no usable gap. Fallback so "add effect"
+    /// stays usable when the playhead is inside an existing segment.
+    private func nearestGap(to t: Double,
+                            occupied: [(Double, Double)],
+                            minLength: Double) -> (Double, Double)? {
+        guard duration > 0 else { return nil }
+        let sorted = occupied.filter { $0.1 > $0.0 }.sorted { $0.0 < $1.0 }
+        var gaps: [(Double, Double)] = []
+        var cursor: Double = 0
+        for seg in sorted {
+            if seg.0 > cursor + 0.001 { gaps.append((cursor, seg.0)) }
+            cursor = max(cursor, seg.1)
+        }
+        if cursor < duration - 0.001 { gaps.append((cursor, duration)) }
+        return gaps
+            .filter { ($0.1 - $0.0) >= minLength }
+            .min { a, b in
+                let da = t < a.0 ? a.0 - t : (t > a.1 ? t - a.1 : 0)
+                let db = t < b.0 ? b.0 - t : (t > b.1 ? t - b.1 : 0)
+                return da < db
+            }
+    }
+
     private func zoomGapAtClickTime(_ t: Double) -> (Double, Double)? {
         guard duration > 0 else { return nil }
         let zooms = zoomSegments
@@ -1659,6 +1710,7 @@ final class EffectsBandView: NSView {
         guard let ctx = sender.representedObject as? TextSizeMenuContext,
               let seg = textSegments.first(where: { $0.id == ctx.segmentID }) else { return }
         seg.fontSize = ctx.fontSize
+        seg.rememberStyle()
         delegate?.effectsBandDidMutate(self)
         needsDisplay = true
     }
@@ -1667,6 +1719,7 @@ final class EffectsBandView: NSView {
         guard let ctx = sender.representedObject as? TextSegmentRefContext,
               let seg = textSegments.first(where: { $0.id == ctx.segmentID }) else { return }
         seg.bold.toggle()
+        seg.rememberStyle()
         delegate?.effectsBandDidMutate(self)
         needsDisplay = true
     }
@@ -1675,6 +1728,7 @@ final class EffectsBandView: NSView {
         guard let ctx = sender.representedObject as? TextSegmentRefContext,
               let seg = textSegments.first(where: { $0.id == ctx.segmentID }) else { return }
         seg.italic.toggle()
+        seg.rememberStyle()
         delegate?.effectsBandDidMutate(self)
         needsDisplay = true
     }
@@ -1683,6 +1737,7 @@ final class EffectsBandView: NSView {
         guard let ctx = sender.representedObject as? TextAlignmentMenuContext,
               let seg = textSegments.first(where: { $0.id == ctx.segmentID }) else { return }
         seg.alignment = ctx.alignment
+        seg.rememberStyle()
         delegate?.effectsBandDidMutate(self)
         needsDisplay = true
     }
@@ -1691,6 +1746,7 @@ final class EffectsBandView: NSView {
         guard let ctx = sender.representedObject as? TextBgStyleMenuContext,
               let seg = textSegments.first(where: { $0.id == ctx.segmentID }) else { return }
         seg.bgStyle = ctx.style
+        seg.rememberStyle()
         delegate?.effectsBandDidMutate(self)
         needsDisplay = true
     }
@@ -1703,6 +1759,7 @@ final class EffectsBandView: NSView {
         } else {
             seg.textColor = ctx.color
         }
+        seg.rememberStyle()
         delegate?.effectsBandDidMutate(self)
         needsDisplay = true
     }
@@ -1781,8 +1838,8 @@ final class EffectsBandView: NSView {
     private func addSpeedSegment(clickTime: Double, gapStart: Double, gapEnd: Double) {
         guard duration > 0 else { return }
         let gapDuration = gapEnd - gapStart
-        let defaultFactor: Double = 2.0
-        let minSrcDur = VideoSpeedSegment.minCompDuration * defaultFactor
+        let defaultFactor = Self.defaultSpeedFactor
+        let minSrcDur = Self.minimumDefaultSpeedSourceDuration
         guard gapDuration >= minSrcDur else {
             delegate?.effectsBand(self, showStatus: L("Not enough room here"), isError: true)
             return
@@ -1817,7 +1874,7 @@ final class EffectsBandView: NSView {
         let segDuration = min(3.0, max(VideoTextSegment.minDuration, duration))
         var start = clickTime - segDuration / 2
         start = max(0, min(duration - segDuration, start))
-        let seg = VideoTextSegment(startTime: start, endTime: start + segDuration)
+        let seg = VideoTextSegment.withLastUsedStyle(startTime: start, endTime: start + segDuration)
         textSegments.append(seg)
         selectedSegmentID = seg.id
         relayoutAndNotify()

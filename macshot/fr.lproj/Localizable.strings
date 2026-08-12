@@ -166,6 +166,9 @@
 "Right-click to add points" = "Clic droit pour ajouter des points";
 "Hold 1 auto-vertical  ·  Hold 2 auto-horizontal" = "Maintenir 1 auto-vertical  ·  Maintenir 2 auto-horizontal";
 "Limit to selection" = "Limiter à la sélection";
+"Effect" = "Effet";
+"Font" = "Police";
+"System" = "Système";
 
 /* Overlay / Canvas */
 "Click a window  ·  Drag for custom area  ·  F for full screen" = "Cliquer sur une fenêtre  ·  Glisser pour une zone  ·  F pour plein écran";

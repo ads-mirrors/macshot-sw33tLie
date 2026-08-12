@@ -8,7 +8,7 @@ import CoreGraphics
 /// - `zoomLevel` is a multiplier: 1.0 = no zoom, 2.0 = 2x magnification.
 /// - `center` is normalized to the source video's natural (non-transformed)
 ///   bounds: (0, 0) = top-left, (1, 1) = bottom-right. The current UI keeps it
-///   at (0.5, 0.5) and the transform clamps to valid translations.
+///   inside the range where the selected zoom window remains in-frame.
 /// - `fadeIn` / `fadeOut` are the transition ramp durations at each edge.
 ///   Clamped so they never exceed half the segment.
 final class VideoZoomSegment: Codable {
@@ -90,6 +90,17 @@ final class VideoZoomSegment: Codable {
     private func easeInOut(_ x: CGFloat) -> CGFloat {
         let c = max(0, min(1, x))
         return c * c * (3 - 2 * c)
+    }
+
+    /// Clamp a normalized center so the visible zoom window (1/zoom of each
+    /// dimension) stays fully inside the frame. Keeping the center in this
+    /// range means `translation`'s edge clamping never has to shift the view,
+    /// so the region the user drew and the region actually shown stay
+    /// identical (fixes zooming into "the wrong area" near frame edges).
+    static func clampedCenter(_ c: CGPoint, zoom: CGFloat) -> CGPoint {
+        let half = 1.0 / (2 * max(zoom, 1.0001))
+        return CGPoint(x: min(max(c.x, half), 1 - half),
+                       y: min(max(c.y, half), 1 - half))
     }
 
     /// Translation (in video-pixel space) that places `center` at the visible

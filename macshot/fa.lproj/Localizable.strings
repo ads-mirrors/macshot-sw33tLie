@@ -159,6 +159,9 @@
 "Right-click to add points" = "کلیک راست برای افزودن نقطه";
 "Hold 1 auto-vertical  ·  Hold 2 auto-horizontal" = "نگه‌داشتن 1 عمودی خودکار  ·  نگه‌داشتن 2 افقی خودکار";
 "Limit to selection" = "محدود به انتخاب";
+"Effect" = "جلوه";
+"Font" = "قلم";
+"System" = "سیستم";
 
 /* Overlay / Canvas */
 "Click a window  ·  Drag for custom area  ·  F for full screen" = "کلیک روی پنجره  ·  کشیدن برای ناحیه دلخواه  ·  F برای تمام صفحه";

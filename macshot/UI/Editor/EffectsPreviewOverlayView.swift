@@ -42,6 +42,9 @@ final class EffectsPreviewOverlayView: NSView {
     /// is responsible for clamping, writing to the model, and triggering a
     /// composition rebuild.
     var onChange: ((CGRect) -> Void)?
+    /// Fired when an interactive drag (move/resize) finishes, so the owner
+    /// can re-sync the displayed rect with the model's clamped state.
+    var onDragEnded: (() -> Void)?
 
     /// Fires when the user double-clicks inside a text selection's rect.
     /// Reports the **view-space** rect of the selection so the controller
@@ -187,13 +190,22 @@ final class EffectsPreviewOverlayView: NSView {
             newRect = NSRect(x: nx, y: ny, width: originalView.width, height: originalView.height)
 
         case .resize(let corner):
-            newRect = resizedRect(from: originalView, corner: corner, to: p)
-            // Clamp to video bounds
-            let xLo = max(videoR.minX, newRect.minX)
-            let yLo = max(videoR.minY, newRect.minY)
-            let xHi = min(videoR.maxX, newRect.maxX)
-            let yHi = min(videoR.maxY, newRect.maxY)
-            newRect = NSRect(x: xLo, y: yLo, width: max(0, xHi - xLo), height: max(0, yHi - yLo))
+            if case .zoom = selection.kind {
+                newRect = zoomResizedRect(from: originalView,
+                                          handle: corner,
+                                          to: p,
+                                          in: videoR)
+            } else {
+                newRect = resizedRect(from: originalView, corner: corner, to: p)
+                // Clamp non-zoom selections to the visible video bounds.
+                let xLo = max(videoR.minX, newRect.minX)
+                let yLo = max(videoR.minY, newRect.minY)
+                let xHi = min(videoR.maxX, newRect.maxX)
+                let yHi = min(videoR.maxY, newRect.maxY)
+                newRect = NSRect(x: xLo, y: yLo,
+                                 width: max(0, xHi - xLo),
+                                 height: max(0, yHi - yLo))
+            }
         }
 
         let normalized = normalize(newRect)
@@ -205,7 +217,83 @@ final class EffectsPreviewOverlayView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        let wasDragging = dragMode != nil
         dragMode = nil
+        if wasDragging { onDragEnded?() }
+    }
+
+    /// Resize a zoom window as a fraction of the full video in both axes.
+    /// This preserves the video's aspect ratio while making every handle
+    /// responsive: side handles use their own axis and corner handles project
+    /// the pointer onto the aspect-locked diagonal. The opposite edge/corner
+    /// stays anchored unless bounds clamping has to nudge a large rect inward.
+    private func zoomResizedRect(from original: NSRect,
+                                 handle: Corner,
+                                 to p: NSPoint,
+                                 in videoR: NSRect) -> NSRect {
+        guard videoR.width > 0, videoR.height > 0 else { return original }
+
+        let fraction: CGFloat
+        switch handle {
+        case .left:
+            fraction = (original.maxX - p.x) / videoR.width
+        case .right:
+            fraction = (p.x - original.minX) / videoR.width
+        case .top:
+            fraction = (p.y - original.minY) / videoR.height
+        case .bottom:
+            fraction = (original.maxY - p.y) / videoR.height
+        case .topLeft:
+            let dx = original.maxX - p.x
+            let dy = p.y - original.minY
+            fraction = (dx * videoR.width + dy * videoR.height)
+                / (videoR.width * videoR.width + videoR.height * videoR.height)
+        case .topRight:
+            let dx = p.x - original.minX
+            let dy = p.y - original.minY
+            fraction = (dx * videoR.width + dy * videoR.height)
+                / (videoR.width * videoR.width + videoR.height * videoR.height)
+        case .bottomRight:
+            let dx = p.x - original.minX
+            let dy = original.maxY - p.y
+            fraction = (dx * videoR.width + dy * videoR.height)
+                / (videoR.width * videoR.width + videoR.height * videoR.height)
+        case .bottomLeft:
+            let dx = original.maxX - p.x
+            let dy = original.maxY - p.y
+            fraction = (dx * videoR.width + dy * videoR.height)
+                / (videoR.width * videoR.width + videoR.height * videoR.height)
+        }
+
+        let minFraction = 1.0 / VideoZoomSegment.maxZoom
+        let maxFraction = 1.0 / VideoZoomSegment.minZoom
+        let f = min(max(fraction, minFraction), maxFraction)
+        let width = f * videoR.width
+        let height = f * videoR.height
+
+        var origin: NSPoint
+        switch handle {
+        case .left:
+            origin = NSPoint(x: original.maxX - width, y: original.midY - height / 2)
+        case .right:
+            origin = NSPoint(x: original.minX, y: original.midY - height / 2)
+        case .top:
+            origin = NSPoint(x: original.midX - width / 2, y: original.minY)
+        case .bottom:
+            origin = NSPoint(x: original.midX - width / 2, y: original.maxY - height)
+        case .topLeft:
+            origin = NSPoint(x: original.maxX - width, y: original.minY)
+        case .topRight:
+            origin = NSPoint(x: original.minX, y: original.minY)
+        case .bottomRight:
+            origin = NSPoint(x: original.minX, y: original.maxY - height)
+        case .bottomLeft:
+            origin = NSPoint(x: original.maxX - width, y: original.maxY - height)
+        }
+
+        origin.x = max(videoR.minX, min(videoR.maxX - width, origin.x))
+        origin.y = max(videoR.minY, min(videoR.maxY - height, origin.y))
+        return NSRect(origin: origin, size: NSSize(width: width, height: height))
     }
 
     // MARK: - Geometry

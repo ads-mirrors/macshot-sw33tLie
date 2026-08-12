@@ -670,3 +670,6 @@
 
 /* Measure tool: clamp toggle (#212) */
 "Limit to selection" = "Limit to selection";
+"Effect" = "Effect";
+"Font" = "Font";
+"System" = "System";

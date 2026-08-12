@@ -159,6 +159,9 @@
 "Right-click to add points" = "Nokta eklemek için sağ tıklayın";
 "Hold 1 auto-vertical  ·  Hold 2 auto-horizontal" = "1 basılı tut: otomatik dikey  ·  2 basılı tut: otomatik yatay";
 "Limit to selection" = "Seçimle sınırla";
+"Effect" = "Efekt";
+"Font" = "Yazı tipi";
+"System" = "Sistem";
 
 /* Overlay / Canvas */
 "Click a window  ·  Drag for custom area  ·  F for full screen" = "Pencereye tıklayın  ·  Özel alan için sürükleyin  ·  Tam ekran için F";
